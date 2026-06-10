@@ -1,5 +1,5 @@
 {
-  "name": "@sentinel-agentos/core",
+  "name": "sentinel-agentos",
   "version": "0.1.0",
   "description": "Sentinel AgentOS — 确定性 Guard 层 + 分层记忆 + 自动评估，让任何 Agent 变得可靠、可审计、可改进",
   "keywords": [
@@ -21,7 +21,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "sentinel-agentos": "./dist/cli.js"
+    "sentinel-agentos": "dist/cli.js"
   },
   "files": [
     "dist/",
