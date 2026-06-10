@@ -27,7 +27,7 @@ Usage:
   sentinel-agentos stats
   sentinel-agentos profile
   sentinel-agentos status
-  sentinel-agentos server [--port N] [--token T]
+  sentinel-agentos server [--port N] [--token ***
   sentinel-agentos memory
   sentinel-agentos help
 
@@ -37,7 +37,7 @@ Examples:
   sentinel-agentos risk exec command="sudo reboot"
   sentinel-agentos audit --limit 10
   sentinel-agentos status
-  sentinel-agentos server --port 3300 --token my-secret
+  sentinel-agentos server --port 3300 --token ***
 `);
 }
 
