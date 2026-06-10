@@ -140,7 +140,7 @@ export class AgentProfiler {
     }
 
     return {
-      overallScore: overallScore / 100, // Normalize back to 0-1
+      overallScore: Math.round(overallScore) / 100, // Normalize back to 0-1
       totalOps,
       breakdown: {
         preExec: Math.round(preExecScore * 100) / 100,
