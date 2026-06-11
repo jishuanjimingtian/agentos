@@ -11,9 +11,36 @@
  */
 
 const { AgentOS } = require('sentinel-agentos');
+const fs = require('fs');
+const path = require('path');
 
-// 基础 AgentOS 实例用于 postCheck 审计
-const aos = new AgentOS({ workspaceRoot: process.cwd() });
+// 持久化审计日志路径
+const AUDIT_DIR = path.join(__dirname, '..', '.sentinel-audit');
+
+// AgentOS 实例（单例，避免丢失审计数据）
+let _aos = null;
+function getAOS() {
+  if (!_aos) {
+    _aos = new AgentOS({ workspaceRoot: process.cwd() });
+    // 从磁盘恢复审计日志
+    const auditFile = path.join(AUDIT_DIR, 'audit.jsonl');
+    if (fs.existsSync(auditFile)) {
+      try {
+        const lines = fs.readFileSync(auditFile, 'utf-8').trim().split('\n');
+        for (const line of lines) {
+          if (line.trim()) _aos.guard.audit.entries.push(JSON.parse(line));
+        }
+      } catch {}
+    }
+  }
+  return _aos;
+}
+
+// 注入到 module cache 中保持单例
+if (!global.__sentinel_aos) {
+  global.__sentinel_aos = getAOS();
+}
+const aos = global.__sentinel_aos;
 aos.guard.schema.registerRules([
   { tool: 'exec', required: ['command'] },
   { tool: 'write', required: ['path', 'content'],
@@ -100,6 +127,18 @@ module.exports = {
     const { preExec, snapshot } = aos.executePipeline({
       sessionId: sid, agentId: 'openclaw', toolName, parameters: params || {},
     });
+
+    // 持久化审计日志
+    try {
+      if (!fs.existsSync(AUDIT_DIR)) fs.mkdirSync(AUDIT_DIR, { recursive: true });
+      const auditFile = path.join(AUDIT_DIR, 'audit.jsonl');
+      const summary = {
+        ts: new Date().toISOString(), tool: toolName,
+        params: JSON.stringify(params || {}).slice(0, 200),
+        result: String(result || '').slice(0, 100),
+      };
+      fs.appendFileSync(auditFile, JSON.stringify(summary) + '\n');
+    } catch {}
 
     const t = Date.now();
     const ret = aos.completeExecution({
