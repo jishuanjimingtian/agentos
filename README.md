@@ -793,6 +793,36 @@ const entries = api.auditQuery({ minScore: 3.0 }); // 高风险操作 · High-ri
 ```
 </details>
 
+<details>
+<summary><b>Q: Sentinel AgentOS 需要 API Key 吗？ · Does it need an API Key?</b></summary>
+
+不需要。Sentinel AgentOS 的 Guard / Memory / Evaluator 层都是纯确定性代码，不调用任何外部 AI API。唯一的鉴权是 HTTP API 模式下可选的 `--token` 参数。
+*No. All Guard/Memory/Evaluator layers are pure deterministic code with zero external API calls. The only authentication is the optional `--token` for HTTP API mode.*
+</details>
+
+<details>
+<summary><b>Q: HTTP API Token 怎么设置？ · How to set HTTP API token?</b></summary>
+
+三种方式：
+1. 命令行参数：`npx sentinel-agentos server --port 3300 --token my-secret`
+2. 代码中配置：`createServer({ port: 3300, apiToken: 'my-secret' })`
+3. 环境变量：`AGENTOS_TOKEN=*** npx sentinel-agentos server`
+
+不设置 Token 则不加鉴权（仅适合本地开发环境）。
+*Three ways: CLI flag, code config, or AGENTOS_TOKEN env var. No token = no auth (local dev only).*
+</details>
+
+<details>
+<summary><b>Q: Token 泄漏了怎么办？ · What if token leaks?</b></summary>
+
+重启服务，换一个新 Token 即可：
+1. 生成新 Token：`openssl rand -hex 32`
+2. 重启 sentinel-agentos server 使用新 Token
+3. 更新所有客户端调用
+Sentinel AgentOS 的 Token 是服务端本地验证的，无需到任何平台撤销。
+*Restart server with a new token. No external platform involved — tokens are validated locally.*
+</details>
+
 ---
 
 ## 🗺️ 路线图 · Roadmap
@@ -806,6 +836,643 @@ const entries = api.auditQuery({ minScore: 3.0 }); // 高风险操作 · High-ri
 | v1.0 | 沙箱 + API + x- 扩展 + 校验补齐 · *Sandbox + API + x-ext* | ✅ |
 | v1.1 | npm 发布 + 三种接入方式 · *npm publish + 3 modes* | ✅ |
 | v2.0 | Docker 沙箱、Dashboard、SaaS · *Docker sandbox, Dashboard, SaaS* | 📋 |
+
+---
+
+## 🔑 Token 与鉴权说明
+
+Sentinel AgentOS 本身**不依赖外部 AI API**，所有 Guard / Memory / Evaluator 都是纯确定性代码。唯一的鉴权需求来自 **HTTP API 模式**下的 `server` 命令。
+
+### HTTP API Token 鉴权
+
+启动 HTTP 服务后，除 `/health` 外所有端点都需要 Bearer Token 鉴权。
+
+#### 启动时设置 Token
+
+```bash
+# 方式一：命令行参数
+npx sentinel-agentos server --port 3300 --token my-secret-token-123
+
+# 方式二：代码中配置
+import { createServer } from 'sentinel-agentos';
+const server = createServer({ port: 3300, apiToken: 'my-secret-token-123' });
+await server.start();
+```
+
+#### 客户端调用
+
+```bash
+# 所有 API（/health 除外）都需要 Authorization header
+curl -H "Authorization: Bearer my-secret-token-123" \
+  http://localhost:3300/pipeline/profile
+
+# Token 不匹配 → 401 Unauthorized
+curl http://localhost:3300/pipeline/profile
+# → {"error":"Unauthorized: invalid or missing API token"}
+```
+
+#### Token 未设置时
+
+如果不传 `--token` 或 `apiToken`，服务**不加鉴权**，所有端点可自由访问。适用于本地开发环境，生产环境**强烈建议设置 Token**。
+
+```bash
+# 无鉴权模式（仅限本地开发）
+npx sentinel-agentos server --port 3300
+# 所有端点无需 Authorization header
+```
+
+#### Token 最佳实践
+
+| 环境 | Token 策略 | 示例 |
+|------|----------|------|
+| 本地开发 | 可不用 Token | `npx sentinel-agentos server --port 3300` |
+| 本机测试 | 简短 Token | `--token dev-123` |
+| 生产环境 | 强随机 Token | `--token $(openssl rand -hex 32)` |
+| Docker / CI | 环境变量注入 | `--token $AGENTOS_API_TOKEN` |
+| 跨语言调用 | HTTP header | `Authorization: Bearer <token>` |
+
+### 环境变量配置
+
+除 Token 外，Sentinel AgentOS 没有其他必填环境变量。可选的环境变量：
+
+| 环境变量 | 说明 | 默认值 |
+|---------|------|--------|
+| `HOME` / `USERPROFILE` | 持久化存储根目录 | 系统默认 |
+| `AGENTOS_WORKSPACE` | workspace 根目录 | `process.cwd()` |
+| `AGENTOS_TOKEN` | API Token（备选方式） | — |
+
+---
+
+## 📋 完整接口使用说明
+
+> 本章汇总 Sentinel AgentOS 所有接口——CLI、SDK、HTTP API、中间件、沙箱——作为完整参考。
+
+### 命令一览
+
+| 分类 | 接口/命令 | 说明 |
+|------|---------|------|
+| CLI | `validate` | 参数格式校验（Schema Gate） |
+| CLI | `risk` | 风险评分（Risk Gate） |
+| CLI | `audit` | 查询审计日志 |
+| CLI | `stats` | 审计统计（JSON） |
+| CLI | `profile` | Agent 质量画像（JSON） |
+| CLI | `status` | 质量状态报告（人类可读） |
+| CLI | `server` | 启动 HTTP API 服务 |
+| CLI | `memory` | 查看注入上下文 |
+| CLI | `help` | 帮助信息 |
+| SDK | `AgentOS` | 主类，完整流水线 |
+| SDK | `AgentOSAPI` | SDK 协议层（25+ 方法） |
+| SDK | `SchemaGate` / `RiskGate` 等 | 独立组件 |
+| SDK | `wrapAgent` | 一行接入中间件 |
+| SDK | `sentinelPlugin` | OpenClaw 插件 |
+| SDK | `SandboxExecutor` | 沙箱执行器 |
+| HTTP | `POST /pipeline/pre` | 执行前校验 |
+| HTTP | `POST /pipeline/post` | 执行后验证 |
+| HTTP | `GET /pipeline/report` | 状态报告 |
+| HTTP | `GET /pipeline/profile` | 质量画像 |
+| HTTP | `POST /guard/schema` | 注册 Schema 规则 |
+| HTTP | `GET /guard/schema` | 查看 Schema 规则 |
+| HTTP | `POST /memory/preference` | 设置偏好 |
+| HTTP | `POST /memory/fact` | 添加事实 |
+| HTTP | `POST /memory/rule` | 学习规则 |
+| HTTP | `GET /memory/context` | 获取注入上下文 |
+| HTTP | `GET /audit` | 查询审计日志 |
+| HTTP | `POST /feedback` | 记录反馈 |
+| HTTP | `POST /session/end` | 结束 session |
+| HTTP | `GET /health` | 健康检查（免 Token） |
+
+---
+
+### CLI 接口
+
+```
+sentinel-agentos <command> [args...]
+```
+
+#### `validate` — 参数格式校验
+
+```bash
+# 新语法（推荐）
+sentinel-agentos validate <tool> [key=value...]
+
+# 校验 exec 命令
+sentinel-agentos validate exec command="rm -rf /"
+# → {"pass":true,"errors":[]}
+
+# 校验 write_file（会被 pathDeny 拦截）
+sentinel-agentos validate write_file path=.env content=hello
+# → {"pass":false,"errors":[{"field":"path","message":"path matches deny pattern"}]}
+
+# 旧语法（--tool + --params JSON）
+sentinel-agentos validate --tool exec --params '{"command":"npm test"}'
+```
+
+| 参数 | 说明 |
+|------|------|
+| `<tool>` | 工具名称（如 `exec`, `write_file`, `delete_file`） |
+| `key=value` | 参数键值对，支持 `key="带空格的值"`，自动检测类型 |
+
+#### `risk` — 风险评分
+
+```bash
+sentinel-agentos risk exec command="sudo reboot"
+# → {"score":8.5,"action":"deny","dimensions":{"impact":3,"reversibility":0.2,...}}
+
+sentinel-agentos risk exec command="npm test"
+# → {"score":0.19,"action":"auto",...}
+```
+
+| 风险等级 | 分数 | 动作 |
+|---------|------|------|
+| 🟢 Auto | ≤ 0.5 | 自动放行 |
+| 🔵 Notify | ≤ 1.0 | 执行后通知 |
+| 🟡 Confirm | ≤ 3.0 | 暂停等待确认 |
+| 🔴 Deny | > 8.0 | 直接拒绝 |
+
+#### `audit` — 查询审计日志
+
+```bash
+sentinel-agentos audit --limit 10
+# → [{id, sessionId, toolName, verifyStatus, riskScore, ...}, ...]
+
+sentinel-agentos audit --limit 5
+```
+
+#### `stats` / `profile` / `status` — 统计与画像
+
+```bash
+# 审计统计（JSON）
+sentinel-agentos stats
+# → {"totalOperations":156,"verifyFailures":2,"highRiskOps":3,...}
+
+# Agent 质量画像（JSON）
+sentinel-agentos profile
+# → {"overallScore":85,"breakdown":{...},"trends":{...},"warnings":[...]}
+
+# 质量状态报告（人类可读）
+sentinel-agentos status
+# → 文本报告
+```
+
+#### `server` — 启动 HTTP API 服务
+
+```bash
+sentinel-agentos server --port 3300 --token ***
+# → 🛡️ Sentinel AgentOS HTTP server → http://127.0.0.1:3300
+
+# 可选项
+sentinel-agentos server --port 8080 --host 0.0.0.0 --token ***
+```
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--port <N>` | `3300` | 服务端口 |
+| `--host <IP>` | `127.0.0.1` | 绑定地址 |
+| `--token <str>` | — | API 鉴权 Token（不设则无鉴权） |
+
+#### `memory` — 查看记忆上下文
+
+```bash
+sentinel-agentos memory
+# → 当前 semantic + episodic 注入的上下文文本
+```
+
+---
+
+### SDK 接口
+
+#### `AgentOS` — 主类
+
+```typescript
+import { AgentOS } from 'sentinel-agentos';
+
+const aos = new AgentOS({
+  workspaceRoot: process.cwd(),  // 工作区根目录
+  maxWorkingTokens: 50000,       // 工作记忆 token 上限
+  maxEpisodicSizeKb: 500,        // 情景记忆大小上限 (KB)
+  guardConfig: {                 // Guard 配置
+    riskGate: {
+      autoApprove: 0.5,
+      notify: 1.0,
+      confirm: 3.0,
+      deny: 8.0,
+    },
+  },
+});
+```
+
+**构造函数参数 `AgentOSConfig`**：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `workspaceRoot` | string | `process.cwd()` | 工作区根目录，持久化存储位置 |
+| `maxWorkingTokens` | number | `50000` | 工作记忆最大 token 数 |
+| `maxEpisodicSizeKb` | number | `500` | 情景记忆最大大小 (KB) |
+| `guardConfig.riskGate` | object | 见上 | 风险评分阈值覆盖 |
+| `evaluatorConfig.implicitFeedbackEnabled` | boolean | — | 隐性反馈开关 |
+
+**核心方法**：
+
+| 方法 | 返回 | 说明 |
+|------|------|------|
+| `executePipeline({...})` | `{preExec, snapshot, profile}` | 执行前校验流水线（Schema + Risk + Snapshot） |
+| `completeExecution({...})` | `{runtime, postExec, auditEntry, profile}` | 执行后验证流水线（Verify + Audit） |
+| `recordFeedback(signal, sessionId)` | `void` | 记录隐性用户反馈 |
+| `injectContext()` | `string` | 注入记忆上下文（session 启动时调用） |
+| `endSession(sessionId)` | `void` | 结束 session（清空 Working Memory） |
+| `getProfile(sessionId?)` | `AgentProfile` | 获取 Agent 质量画像 |
+| `getAuditStats()` | 审计统计 | 获取审计统计 |
+| `statusReport()` | `string` | 获取人类可读的状态报告 |
+
+**访问子组件**：
+
+```typescript
+// Guard 层
+aos.guard.schema    // SchemaGate — 注册/查询校验规则
+aos.guard.risk      // RiskGate — 风险评分引擎
+aos.guard.snapshot  // SnapshotGate — 执行前快照
+aos.guard.verify    // VerifyGate — 执行后验证
+aos.guard.audit     // AuditLog — 审计日志
+
+// Memory 层
+aos.memory.working   // WorkingMemory — 当前会话工作记忆
+aos.memory.episodic  // EpisodicMemory — 跨会话事件时间线
+aos.memory.semantic  // SemanticMemoryStore — 永久知识
+
+// Evaluator 层
+aos.evaluator.preExec   // PreExecEvaluator — 执行前评估
+aos.evaluator.runtime   // RuntimeEvaluator — 执行中评估
+aos.evaluator.postExec  // PostExecEvaluator — 执行后评估
+aos.evaluator.feedback  // ImplicitFeedbackEngine — 隐性反馈
+aos.evaluator.profiler  // AgentProfiler — 质量画像
+```
+
+#### `AgentOSAPI` — SDK 协议层
+
+```typescript
+import { AgentOS, AgentOSAPI } from 'sentinel-agentos';
+
+const api = new AgentOSAPI(new AgentOS());
+
+// Guard
+api.guardRegisterRule({ tool: 'exec', required: ['command'] });
+api.guardRegisterRules([...]);
+api.guardEvaluateRisk('exec', { command: 'rm -rf /' });
+api.guardSetRiskThresholds({ autoApprove: 0.5, deny: 6.0 });
+
+// Pipeline
+const result = await api.pipelineExecute({
+  sessionId: 's1', agentId: 'a1',
+  toolName: 'write_file',
+  toolParameters: { path: 'src/main.ts', content: 'hello' },
+});
+const complete = api.pipelineComplete({...});
+
+// Memory
+api.memorySetPreference('language', 'zh-CN');
+api.memoryGetPreference('language');  // → 'zh-CN'
+api.memoryLearnRule('提交前 npm test', 'session_1');
+api.memoryDefineTerm('PEP', 'Python Enhancement Proposal');
+api.memorySetProjectContext('my-app', { description: '...', techStack: ['React', 'Node'] });
+api.memoryInjectContext();  // → 启动注入文本
+api.memoryAddMessage('user', 'Hello');
+api.memoryRecordEvent('decision', 'Chose approach A', ['architecture'], []);
+
+// Audit
+api.auditQuery({ toolName: 'exec', limit: 10 });
+api.auditQuery({ minScore: 3.0 });  // 高风险操作
+api.auditStats();
+
+// Feedback
+api.recordFeedback('user_explicit_approval', 's1');
+api.getSatisfaction();           // → 82 (0-100)
+api.getSatisfaction('s1', 24);   // 最近 24 小时
+api.feedbackStats();
+
+// Profile
+api.getProfile();
+api.getProfile('s1');
+api.getStatusReport();
+api.getSessionOverview();
+
+// Session
+api.endSession('s1');
+```
+
+**AgentOSAPI 完整方法清单（25 个）**：
+
+| 方法 | 说明 |
+|------|------|
+| `guardRegisterRule(rule)` | 注册单条 Schema 规则 |
+| `guardRegisterRules(rules)` | 批量注册 Schema 规则 |
+| `guardHasRule(toolName)` | 检查工具是否有规则 |
+| `guardGetRules()` | 获取所有已注册规则 |
+| `guardEvaluateRisk(tool, params)` | 评估风险评分 |
+| `guardSetRiskThresholds(thresholds)` | 设置风险阈值 |
+| `pipelineExecute(params)` | 执行前校验流水线 |
+| `pipelineComplete(params)` | 执行后验证流水线 |
+| `memoryInjectContext()` | 注入记忆上下文 |
+| `memoryAddMessage(role, content)` | 添加工作记忆消息 |
+| `memorySetTask(task)` | 设置当前任务 |
+| `memoryCacheResult(tool, result)` | 缓存工具结果 |
+| `memoryRecordEvent(type, content, tags, entities)` | 记录情景事件 |
+| `memorySetPreference(key, value)` | 设置用户偏好 |
+| `memoryGetPreference(key)` | 获取用户偏好 |
+| `memoryLearnRule(rule, source)` | 学习规则 |
+| `memoryDefineTerm(term, meaning)` | 定义术语 |
+| `memorySetProjectContext(name, context)` | 设置项目上下文 |
+| `auditQuery(filter)` | 查询审计日志 |
+| `auditStats()` | 审计统计 |
+| `recordFeedback(signal, sessionId)` | 记录反馈 |
+| `getSatisfaction(sessionId?, hours?)` | 获取满意度 |
+| `feedbackStats()` | 反馈统计 |
+| `getProfile(sessionId?)` | 获取质量画像 |
+| `getStatusReport()` | 获取状态报告 |
+| `getSessionOverview()` | 获取 session 概况 |
+| `endSession(sessionId)` | 结束 session |
+
+---
+
+### HTTP API 接口
+
+基础 URL：`http://localhost:3300`（默认）
+
+#### Request/Response 通用格式
+
+- **Content-Type**：`application/json`
+- **鉴权**：除 `/health` 外，`Authorization: Bearer <token>`
+- **成功**：`200 OK`，JSON body
+- **鉴权失败**：`401 Unauthorized`
+- **参数错误**：`400 Bad Request`，`{"error":"..."}`
+- **服务错误**：`500 Internal Server Error`
+
+#### 端点详情
+
+##### `GET /health` — 健康检查（免 Token）
+
+```bash
+curl http://localhost:3300/health
+# → {"ok":true,"uptime":12.3}
+```
+
+##### `POST /pipeline/pre` — 执行前校验
+
+```bash
+curl -X POST http://localhost:3300/pipeline/pre \
+  -H "Authorization: Bearer ***" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sessionId": "s1",
+    "agentId": "main",
+    "toolName": "exec",
+    "parameters": {"command": "npm test"},
+    "affectedFiles": []
+  }'
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `toolName` | string | ✅ | 工具名 |
+| `sessionId` | string | ❌ | 默认 `"http_session"` |
+| `agentId` | string | ❌ | 默认 `"http_agent"` |
+| `parameters` | object | ❌ | 工具参数，默认 `{}` |
+| `affectedFiles` | string[] | ❌ | 受影响的文件列表 |
+
+**返回**：
+
+```json
+{
+  "preExec": {
+    "schemaCheck": { "pass": true, "errors": [] },
+    "riskScore": { "score": 0.19, "action": "auto", "dimensions": {...} },
+    "paramQuality": { "score": 85, "observations": [] },
+    "contextUtilization": { "score": 70, "patterns": [] }
+  },
+  "snapshot": { "id": "...", "fileHashes": {...}, "gitHead": "...", "gitDirty": false },
+  "profile": { "overallScore": 85, ... }
+}
+```
+
+##### `POST /pipeline/post` — 执行后验证
+
+```bash
+curl -X POST http://localhost:3300/pipeline/post \
+  -H "Authorization: Bearer ***" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "toolName": "exec",
+    "toolParameters": {"command": "npm test"},
+    "toolResult": "all passed",
+    "snapshot": {...},
+    "startTime": 1718123456000,
+    "endTime": 1718123457000,
+    "retryCount": 0,
+    "wasSelfCorrected": false,
+    "hadTimeout": false,
+    "userAccepted": true,
+    "userProvidedEdit": false,
+    "resultWasUsed": true
+  }'
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `toolName` | string | ✅ | 工具名 |
+| `sessionId` | string | ❌ | session 标识 |
+| `agentId` | string | ❌ | agent 标识 |
+| `toolParameters` | object | ❌ | 执行时的参数 |
+| `toolResult` | any | ❌ | 工具返回结果 |
+| `snapshot` | object | ❌ | 从 `/pipeline/pre` 获取的 snapshot |
+| `startTime` | number | ❌ | 执行开始时间戳 ms |
+| `endTime` | number | ❌ | 执行结束时间戳 ms |
+| `retryCount` | number | ❌ | 重试次数，默认 0 |
+| `wasSelfCorrected` | boolean | ❌ | Agent 是否自我纠正 |
+| `hadTimeout` | boolean | ❌ | 是否超时 |
+| `userAccepted` | boolean | ❌ | 用户是否接受了结果 |
+| `userProvidedEdit` | boolean | ❌ | 用户是否修改了结果 |
+| `resultWasUsed` | boolean | ❌ | 用户是否使用了结果 |
+
+##### `GET /pipeline/report` / `GET /pipeline/profile`
+
+```bash
+curl -H "Authorization: Bearer ***" http://localhost:3300/pipeline/report
+# → {"report":"=== AgentOS Status Report ===\n..."}
+
+curl -H "Authorization: Bearer ***" http://localhost:3300/pipeline/profile
+curl -H "Authorization: Bearer ***" "http://localhost:3300/pipeline/profile?sessionId=s1"
+```
+
+##### `POST /guard/schema` / `GET /guard/schema`
+
+```bash
+# 注册规则
+curl -X POST http://localhost:3300/guard/schema \
+  -H "Authorization: Bearer ***" \
+  -H "Content-Type: application/json" \
+  -d '{"tool":"delete_file","required":["path"],"forbidden":[]}'
+# → {"ok":true,"tool":"delete_file"}
+
+# 查看规则
+curl -H "Authorization: Bearer ***" "http://localhost:3300/guard/schema?tool=delete_file"
+```
+
+##### Memory 端点（4 个）
+
+```bash
+# 设置偏好
+curl -X POST http://localhost:3300/memory/preference \
+  -H "Authorization: Bearer ***" -H "Content-Type: application/json" \
+  -d '{"key":"language","value":"zh-CN"}'
+
+# 添加事实
+curl -X POST http://localhost:3300/memory/fact \
+  -H "Authorization: Bearer ***" -H "Content-Type: application/json" \
+  -d '{"fact":"用户在北京"}'
+
+# 学习规则
+curl -X POST http://localhost:3300/memory/rule \
+  -H "Authorization: Bearer ***" -H "Content-Type: application/json" \
+  -d '{"rule":"提交前运行 npm test","source":"session_1"}'
+
+# 获取注入上下文
+curl -H "Authorization: Bearer ***" http://localhost:3300/memory/context
+```
+
+##### `GET /audit` — 审计查询
+
+```bash
+curl -H "Authorization: Bearer ***" "http://localhost:3300/audit?limit=10"
+curl -H "Authorization: Bearer ***" "http://localhost:3300/audit?toolName=exec&status=FAIL"
+```
+
+| 查询参数 | 说明 |
+|---------|------|
+| `limit` | 返回条数（默认 20） |
+| `toolName` | 按工具名过滤 |
+| `status` | 按校验状态过滤：`PASS` / `WARN` / `FAIL` |
+
+##### `POST /feedback` — 记录隐性反馈
+
+```bash
+curl -X POST http://localhost:3300/feedback \
+  -H "Authorization: Bearer ***" -H "Content-Type: application/json" \
+  -d '{"signal":"user_explicit_approval","sessionId":"s1"}'
+```
+
+**支持的 signal 值**：
+
+| Signal | 强度 | 说明 |
+|--------|------|------|
+| `user_explicit_approval` | +0.6 | 用户明确说"做得好" |
+| `user_immediate_continue` | +0.3 | 用户立即继续对话 |
+| `user_used_result` | +0.7 | 用户使用了 Agent 的结果 |
+| `user_shared_output` | +0.8 | 用户分享了 Agent 输出 |
+| `user_modified_output` | -0.5 | 用户修改了 Agent 输出 |
+| `user_deleted_code` | -0.8 | 用户删除了 Agent 创建的代码 |
+| `user_interrupted` | -0.6 | 用户打断了 Agent |
+| `user_repeated_instruction` | -0.3 | 用户重复了相同指令 |
+
+##### `POST /session/end` — 结束 Session
+
+```bash
+curl -X POST http://localhost:3300/session/end \
+  -H "Authorization: Bearer ***" -H "Content-Type: application/json" \
+  -d '{"sessionId":"s1"}'
+# → {"ok":true}
+```
+
+---
+
+### 中间件 / 插件接口
+
+#### `wrapAgent` — 一行接入中间件
+
+```typescript
+import { wrapAgent } from 'sentinel-agentos';
+
+const sentinel = wrapAgent({ workspaceRoot: process.cwd() });
+
+// 每个工具调用前后调用
+const { allowed, reason } = sentinel.preCheck('exec', { command: 'rm -rf /' });
+// → { allowed: false, reason: 'Risk 9.18 → DENY' }
+
+const { allowed } = sentinel.preCheck('exec', { command: 'npm test' });
+// → { allowed: true }
+
+// 执行后验证
+sentinel.postCheck('exec', { command: 'npm test' }, 'all passed');
+```
+
+**`wrapAgent` 参数**：
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `workspaceRoot` | string | `process.cwd()` | 工作区根目录 |
+| `maxWorkingTokens` | number | `50000` | 工作记忆 token 上限 |
+| `preRegisteredRules` | boolean | `false` | 是否使用内置默认规则 |
+
+#### `sentinelPlugin` — OpenClaw 插件
+
+```typescript
+import { sentinelPlugin } from 'sentinel-agentos';
+
+const plugin = sentinelPlugin({
+  workspaceRoot: process.cwd(),
+  preRegisteredRules: true,
+});
+// → onBeforeTool → Schema + Risk 校验
+// → onAfterTool → Verify + Audit 记录
+```
+
+---
+
+### Sandbox 沙箱接口
+
+```typescript
+import { SandboxExecutor } from 'sentinel-agentos';
+
+const sandbox = new SandboxExecutor({
+  mode: 'sandbox',               // 'direct' | 'sandbox' | 'dry-run'
+  workspaceRoot: process.cwd(),
+  timeoutMs: 30000,               // 命令超时 30s
+  networkAccess: 'whitelist',     // 'none' | 'localhost' | 'whitelist'
+  networkWhitelist: ['api.github.com', 'registry.npmjs.org'],
+  writablePaths: ['src/', 'tests/', 'dist/'],
+  readonlyPaths: ['node_modules/', '.git/'],
+  allowedTools: ['read_file', 'write_file', 'edit', 'exec'],
+  forbiddenTools: ['rm', 'unlink', 'delete_file'],
+});
+
+// 预检
+const check = sandbox.validate('exec', { command: 'curl evil.com' });
+// → { success: false, sandboxRejectReason: 'Network not in whitelist' }
+
+// 执行
+const result = await sandbox.execute('exec', { command: 'npm test' });
+// → { success: true, result: {...} }
+```
+
+**`SandboxExecutor` 构造参数**：
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `mode` | `'direct' | 'sandbox' | 'dry-run'` | `'sandbox'` | 执行模式 |
+| `workspaceRoot` | string | `process.cwd()` | 工作区根目录 |
+| `timeoutMs` | number | `30000` | 命令超时毫秒 |
+| `networkAccess` | `'none' | 'localhost' | 'whitelist'` | `'localhost'` | 网络策略 |
+| `networkWhitelist` | string[] | `[]` | 网络白名单域名 |
+| `writablePaths` | string[] | `[]` | 可写路径 |
+| `readonlyPaths` | string[] | `[]` | 只读路径 |
+| `allowedTools` | string[] | `[]` | 允许的工具 |
+| `forbiddenTools` | string[] | `[]` | 禁止的工具 |
+
+**执行模式说明**：
+
+| 模式 | 说明 |
+|------|------|
+| `direct` | 直接执行，无限制 |
+| `sandbox` | 沙箱模式，受限的文件系统和网络访问 |
+| `dry-run` | 试运行，不实际执行，只校验权限 |
 
 ---
 
