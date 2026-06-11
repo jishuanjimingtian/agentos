@@ -152,13 +152,21 @@ module.exports = {
       fs.appendFileSync(path.join(AUDIT_DIR, 'audit.jsonl'), JSON.stringify(entry) + '\n');
     } catch {}
 
-    // AgentOS 完整审计放到 next tick，不阻塞回复（230ms git → 后台）
+    // AgentOS 完整审计放到 next tick，不阻塞回复
     setImmediate(() => {
       try {
         const sid = `s${global.__sentinel_session_id}_op${opCounter}`;
         const { preExec, snapshot } = aos.executePipeline({
           sessionId: sid, agentId: 'openclaw', toolName, parameters: params || {},
         });
+
+        // 根据工具类型推断 claimedResult，让 Verify Gate 正常工作
+        const claimed = {};
+        if (['write', 'edit', 'delete'].includes(toolName) && params?.path) {
+          claimed.files = [String(params.path)];
+        }
+        if (result) claimed.result = result;
+
         aos.completeExecution({
           sessionId: sid, agentId: 'openclaw', toolName,
           toolParameters: params || {}, toolResult: result ?? null,
@@ -166,6 +174,10 @@ module.exports = {
           retryCount: 0, wasSelfCorrected: false, hadTimeout: false,
           userAccepted: true, userProvidedEdit: false, resultWasUsed: true,
         });
+
+        // 记录反馈：结果被使用 = 正面信号
+        aos.recordFeedback('user_used_result', `s${global.__sentinel_session_id}`);
+
         if (toolName === 'exec' && params?.command) {
           aos.memory.episodic.record('tool_call', String(params.command), ['exec'], []);
         }
