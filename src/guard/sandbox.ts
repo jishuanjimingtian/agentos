@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { execSync } from 'child_process';
 
 /**
  * Execution mode — from DESIGN.md §4.5
@@ -245,8 +246,6 @@ export class SandboxExecutor {
     const cwd = String(params['cwd'] || this.config.workspaceRoot);
 
     try {
-      const { execSync } = require('child_process');
-
       // Apply network restrictions
       const env = this.buildSandboxEnv();
 

@@ -302,6 +302,7 @@ describe('SemanticMemoryStore', () => {
     diskStore.enablePersistence(tmpDir);
     diskStore.setPreference('key', 'value');
     diskStore.learnRule('Test rule', 's1');
+    diskStore.flush();  // force write before reading
 
     const loaded = new SemanticMemoryStore();
     loaded.enablePersistence(tmpDir);

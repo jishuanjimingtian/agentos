@@ -2,6 +2,7 @@ import { Snapshot, DiffInfo, VerifyCheck } from '../types';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { execSync } from 'child_process';
 
 /**
  * Hash a file's content with SHA-256.
@@ -67,7 +68,7 @@ function generateId(): string {
 }
 
 /**
- * Snapshot Gate — captures pre-execution state for later diff/rollback.
+ * Snapshot Gate �?captures pre-execution state for later diff/rollback.
  *
  * Takes a lightweight snapshot (file hashes, git status, env vars)
  * before a tool call executes so that Verify Gate and Rollback
@@ -106,7 +107,7 @@ export class SnapshotGate {
       // Hash entire workspace (excl node_modules, .git, dist)
       fileHashes = collectHashes(this.workspaceRoot, ['**/*']);
     }
-    // scope === 'full' would capture more (env, etc.) — reserved for v2
+    // scope === 'full' would capture more (env, etc.) �?reserved for v2
 
     const { gitHead, gitDirty } = this.getGitStatus();
 
@@ -116,7 +117,7 @@ export class SnapshotGate {
       timestamp: Date.now(),
       scope,
       fileHashes,
-      envVars: {}, // scoped env capture — TBD in future iterations
+      envVars: {}, // scoped env capture �?TBD in future iterations
       gitHead,
       gitDirty,
     };
@@ -152,7 +153,6 @@ export class SnapshotGate {
 
             // Try to read old content from git
             try {
-              const { execSync } = require('child_process');
               const oldContent = execSync(
                 `git show ${snapshot.gitHead}:${file}`,
                 { cwd: this.workspaceRoot, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] },
@@ -161,16 +161,15 @@ export class SnapshotGate {
               linesAdded += Math.max(0, newLines - oldLines);
               linesRemoved += Math.max(0, oldLines - newLines);
             } catch {
-              // File didn't exist in git — treat as entirely new
+              // File didn't exist in git �?treat as entirely new
               linesAdded += newLines;
             }
           } catch {
-            // Can't read — skip line counting
+            // Can't read �?skip line counting
           }
         } else {
           // File was deleted
           try {
-            const { execSync } = require('child_process');
             const oldContent = execSync(
               `git show ${snapshot.gitHead}:${file}`,
               { cwd: this.workspaceRoot, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] },
@@ -199,7 +198,6 @@ export class SnapshotGate {
    */
   private getGitStatus(): { gitHead: string; gitDirty: boolean } {
     try {
-      const { execSync } = require('child_process');
       const head = execSync('git rev-parse HEAD', {
         cwd: this.workspaceRoot,
         encoding: 'utf-8',
@@ -223,7 +221,6 @@ export class SnapshotGate {
    */
   rollbackFile(snapshot: Snapshot, file: string): boolean {
     try {
-      const { execSync } = require('child_process');
       execSync(`git checkout ${snapshot.gitHead} -- "${file}"`, {
         cwd: this.workspaceRoot,
         stdio: ['pipe', 'pipe', 'ignore'],
@@ -259,7 +256,7 @@ export class SnapshotGate {
 }
 
 /**
- * Verify Gate — post-execution state verification.
+ * Verify Gate �?post-execution state verification.
  *
  * Checks that what the agent claimed actually happened.
  * Zero LLM dependency: file existence, hash changes, lint, typecheck, etc.
@@ -369,7 +366,7 @@ export class VerifyGate {
         checks.push({
           name: `File unchanged check: ${file}`,
           status: 'WARN',
-          detail: 'File hash unchanged — no modifications detected',
+          detail: 'File hash unchanged �?no modifications detected',
         });
       } else {
         checks.push({ name: `File unchanged check: ${file}`, status: 'PASS' });
@@ -402,7 +399,6 @@ export class VerifyGate {
       const pkgPath = path.join(this.workspaceRoot, 'package.json');
       if (fs.existsSync(pkgPath)) {
         const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-        const { execSync } = require('child_process');
         const result = execSync(`npm view ${pkg.name} version 2>&1`, {
           cwd: this.workspaceRoot,
           encoding: 'utf-8',
@@ -438,7 +434,6 @@ export class VerifyGate {
    */
   private verifyGitPush(): VerifyCheck {
     try {
-      const { execSync } = require('child_process');
 
       // Use git ls-remote to verify remote HEAD matches local
       const localHead = execSync('git rev-parse HEAD 2>&1', {
@@ -524,7 +519,7 @@ export class VerifyGate {
       return {
         name: 'Result non-empty',
         status: 'WARN',
-        detail: 'Result is empty — possible hallucination',
+        detail: 'Result is empty �?possible hallucination',
       };
     }
 
@@ -544,7 +539,6 @@ export class VerifyGate {
    */
   private verifyLint(): VerifyCheck {
     try {
-      const { execSync } = require('child_process');
       execSync('npx eslint src/ --ext .ts --quiet 2>&1', {
         cwd: this.workspaceRoot,
         stdio: ['pipe', 'pipe', 'ignore'],
@@ -554,7 +548,7 @@ export class VerifyGate {
       return {
         name: 'Lint check',
         status: 'WARN',
-        detail: 'Lint issues found — review recommended',
+        detail: 'Lint issues found �?review recommended',
       };
     }
   }
@@ -564,7 +558,6 @@ export class VerifyGate {
    */
   private verifyTypeCheck(): VerifyCheck {
     try {
-      const { execSync } = require('child_process');
       execSync('npx tsc --noEmit 2>&1', {
         cwd: this.workspaceRoot,
         stdio: ['pipe', 'pipe', 'ignore'],

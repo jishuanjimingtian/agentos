@@ -12,6 +12,8 @@ import * as path from 'path';
 export class SemanticMemoryStore {
   private memory: SemanticMemory;
   private storagePath?: string;
+  private _saveTimer: NodeJS.Timeout | null = null;
+  private _dirty = false;
 
   constructor() {
     this.memory = {
@@ -225,7 +227,21 @@ export class SemanticMemoryStore {
   }
 
   /** Persist to disk */
-  private save(): void {
+  private markDirty(): void {
+    this._dirty = true;
+    if (!this._saveTimer) {
+      this._saveTimer = setTimeout(() => {
+        this._saveTimer = null;
+        if (this._dirty) {
+          this.persist();
+          this._dirty = false;
+        }
+      }, 300);
+    }
+  }
+
+  /** Persist to disk */
+  private persist(): void {
     if (!this.storagePath) return;
 
     const dir = path.dirname(this.storagePath);
@@ -234,6 +250,22 @@ export class SemanticMemoryStore {
     }
 
     fs.writeFileSync(this.storagePath, JSON.stringify(this.memory, null, 2), 'utf-8');
+  }
+
+  private save(): void {
+    this.markDirty();
+  }
+
+  /** Force immediate write to disk (for testing / shutdown) */
+  flush(): void {
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+    if (this._dirty) {
+      this.persist();
+      this._dirty = false;
+    }
   }
 
   /** Load from disk */
