@@ -325,8 +325,10 @@ const guard = require('../sentinel-guard');
       fatal(`Unknown command: ${cmd}. Run 'sentinel-agentos help' for usage.`);
   }
 }
-
-main().catch((err) => {
-  console.error('❌', err.message);
-  process.exit(1);
-});
+// Only auto-run when invoked directly, not via require/test
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('❌', err.message);
+    process.exit(1);
+  });
+}
