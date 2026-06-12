@@ -1,4 +1,4 @@
-import { SemanticMemory, LearnedRule } from '../types';
+import { SemanticMemory, LearnedRule, UserFact } from '../types';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -64,51 +64,47 @@ export class SemanticMemoryStore {
 
   /** Add a fact about the user */
   addFact(fact: string): void {
-    if (!this.memory.userFacts.includes(fact)) {
-      this.memory.userFacts.push(fact);
+    const existing = this.memory.userFacts.find((f) => f.fact === fact);
+    if (existing) {
+      existing.lastReferenced = Date.now();
+    } else {
+      this.memory.userFacts.push({
+        fact,
+        timestamp: Date.now(),
+        lastReferenced: Date.now(),
+      });
       this.save();
     }
   }
 
-  /** Get all user facts */
-  getFacts(): string[] {
+  /** Get active (non-stale) user facts */
+  getFacts(maxStaleMs = 30 * 24 * 60 * 60 * 1000): string[] {
+    const now = Date.now();
+    const staleThreshold = now - maxStaleMs;
+    return this.memory.userFacts
+      .filter((f) => f.lastReferenced >= staleThreshold)
+      .map((f) => f.fact);
+  }
+
+  /** Get all facts including stale ones */
+  getAllFacts(): UserFact[] {
     return [...this.memory.userFacts];
   }
 
   // === Project Context ===
 
-  /** Set or update project context */
+  /** Set or update project context — merges with existing, preserves extra fields */
   setProjectContext(
     projectName: string,
-    context: {
-      description?: string;
-      techStack?: string[];
-      conventions?: string[];
-      architecture?: string;
-      knownIssues?: string[];
-    },
+    context: Record<string, unknown>,
   ): void {
-    const existing = this.memory.projectContext[projectName] ?? {
-      description: '',
-      techStack: [],
-      conventions: [],
-      architecture: '',
-      knownIssues: [],
-    };
-
-    this.memory.projectContext[projectName] = {
-      description: context.description ?? existing.description,
-      techStack: context.techStack ?? existing.techStack,
-      conventions: context.conventions ?? existing.conventions,
-      architecture: context.architecture ?? existing.architecture,
-      knownIssues: context.knownIssues ?? existing.knownIssues,
-    };
-
+    const existing = this.memory.projectContext[projectName] ?? {};
+    this.memory.projectContext[projectName] = Object.assign({}, existing, context);
     this.save();
   }
 
   /** Get project context */
-  getProjectContext(projectName: string) {
+  getProjectContext(projectName: string): Record<string, unknown> | undefined {
     return this.memory.projectContext[projectName];
   }
 
@@ -124,16 +120,18 @@ export class SemanticMemoryStore {
     const existing = this.memory.learnedRules.find((r) => r.rule === rule);
 
     if (existing) {
-      // Reinforce: increase confidence and add source
-      existing.confidence = Math.min(1.0, existing.confidence + 0.1);
+      // Reinforce: asymptotically approach 0.85 (never hits 1.0)
+      existing.confidence = 0.85 - (0.85 - existing.confidence) * 0.5;
+      existing.lastReferenced = Date.now();
       if (!existing.source.includes(source)) {
         existing.source.push(source);
       }
     } else {
       this.memory.learnedRules.push({
         rule,
-        confidence: 0.5, // Start at 50% — needs repetition to solidify
+        confidence: 0.5,
         source: [source],
+        lastReferenced: Date.now(),
       });
     }
 
@@ -145,6 +143,20 @@ export class SemanticMemoryStore {
     return this.memory.learnedRules
       .filter((r) => r.confidence >= minConfidence)
       .sort((a, b) => b.confidence - a.confidence);
+  }
+
+  /** Decay confidence of rules not referenced in a given timespan */
+  decayUnusedRules(maxStaleMs = 3 * 24 * 60 * 60 * 1000): number {
+    const staleThreshold = Date.now() - maxStaleMs;
+    let decayed = 0;
+    for (const rule of this.memory.learnedRules) {
+      if (rule.lastReferenced < staleThreshold && rule.confidence > 0.1) {
+        rule.confidence = Math.max(0.1, rule.confidence - 0.05);
+        decayed++;
+      }
+    }
+    if (decayed > 0) this.save();
+    return decayed;
   }
 
   /** Get all rules regardless of confidence */
@@ -177,10 +189,11 @@ export class SemanticMemoryStore {
   generateContextSummary(maxChars = 3000): string {
     const parts: string[] = ['[AgentOS Semantic Memory]', ''];
 
-    // User facts
-    if (this.memory.userFacts.length > 0) {
+    // User facts (non-stale only)
+    const activeFacts = this.getFacts();
+    if (activeFacts.length > 0) {
       parts.push('## About the User');
-      for (const fact of this.memory.userFacts.slice(0, 5)) {
+      for (const fact of activeFacts.slice(0, 5)) {
         parts.push(`- ${fact}`);
       }
       parts.push('');
@@ -203,11 +216,9 @@ export class SemanticMemoryStore {
       for (const proj of projects.slice(0, 3)) {
         const ctx = this.memory.projectContext[proj]!;
         parts.push(`### ${proj}`);
-        parts.push(`- Description: ${ctx.description}`);
-        parts.push(`- Tech: ${ctx.techStack.join(', ')}`);
-        if (ctx.conventions.length > 0) {
-          parts.push(`- Conventions: ${ctx.conventions.slice(0, 5).join(', ')}`);
-        }
+        if (ctx.description) parts.push(`- Description: ${ctx.description}`);
+        if (ctx.techStack?.length) parts.push(`- Tech: ${(ctx.techStack as string[]).join(', ')}`);
+        if (ctx.conventions?.length) parts.push(`- Conventions: ${(ctx.conventions as string[]).slice(0, 5).join(', ')}`);
         parts.push('');
       }
     }

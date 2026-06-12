@@ -19,7 +19,7 @@ describe('ImplicitFeedbackEngine', () => {
     const cases: Array<[SignalType, number]> = [
       ['user_deleted_code', -0.8], ['user_interrupted', -0.6],
       ['user_provided_correction', -0.7], ['user_modified_output', -0.5],
-      ['user_repeated_instruction', -0.3], ['user_ignored_result', -0.4],
+      ['user_repeated_instruction', -0.15], ['user_ignored_result', -0.4],
       ['user_silence_then_praise', 0.2], ['user_immediate_continue', 0.3],
       ['agent_self_corrected', 0.3], ['user_explicit_approval', 0.6],
       ['user_used_result', 0.7], ['user_shared_output', 0.8],

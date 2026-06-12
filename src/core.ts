@@ -367,6 +367,9 @@ export class AgentOS {
       this.appendDailyLog(sessionId, workspaceRoot);
     }
 
+    // Phase 5: Decay unused semantic rules
+    this.memory.semantic.decayUnusedRules();
+
     // Phase 6: Clear working memory for next session
     this.memory.working.clear();
   }

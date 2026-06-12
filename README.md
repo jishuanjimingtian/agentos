@@ -113,7 +113,7 @@ AI Agent 面临五大核心问题，现有框架都没能真正解决。
 
 #### Risk Gate — 风险分级 · Risk Scoring
 
-四维数学公式，零 LLM · *4-dimensional formula:*
+四维数学公式 + 12 条危险正则，零 LLM · *4-dimensional formula + regex patterns:*
 
 ```
 RiskScore = Impact × (1 - Reversibility) × Sensitivity × (1 + ErrorRate)
@@ -126,6 +126,16 @@ RiskScore = Impact × (1 - Reversibility) × Sensitivity × (1 + ErrorRate)
 | ≤ 3.0 | 🟡 暂停等待确认 · *Pause for confirmation* |
 | > 8.0 | 🔴 直接拒绝 · *Deny* |
 
+**安全边界 · Security Limitations**
+
+基于命令字符串的正则匹配能覆盖 ~80% 的直接危险操作（`rm -rf /`、`git push --force main`、`DROP TABLE` 等），但无法检测"看起来正常但实际危险"的操作组合（如 `rm -rf ./node_modules`、`git push --force feature-branch`）。这是基于字符串匹配的本质局限。
+
+兜底措施：
+- **Verify Gate** — 事后校验文件是否真的被修改/删除
+- **Rollback** — git checkout 自动回滚
+- **Confirm 模式** — 风险分 ≥ 3.0 时暂停等待用户确认
+- **Audit Log** — 完整记录每次操作，事后可追溯
+
 #### Snapshot Gate — 执行前快照 · Pre-exec Snapshot
 
 只记录文件 SHA-256 hash + git 状态，不做全量备份，极快。
@@ -133,18 +143,20 @@ RiskScore = Impact × (1 - Reversibility) × Sensitivity × (1 + ErrorRate)
 
 #### Verify Gate — 执行后校验 · Post-exec Verification
 
-**8 项确定性校验** · *8 deterministic checks:*
+**核心 2 项（已实现）+ 6 项可扩展** · *2 core checks (implemented) + 6 extensible:*
 
-| 校验项 · Check | 说明 · Description |
-|--------|------|
-| 文件存在 · File existence | `fs.existsSync()` 验证声称创建的文件 |
-| 文件变更 · File changed | 对比 Snapshot hash，确认真的改了 |
-| Lint | ESLint 验证代码文件 |
-| TypeCheck | `tsc --noEmit` TypeScript 验证 |
-| 格式合法 · Valid format | JSON.parse 验证声称的 JSON 结果 |
-| 返回值非空 · Non-empty result | 不应为空但为空 → WARN |
-| npm 发布 · npm publish | `npm view` 真实验证 |
-| git push | `git ls-remote` HEAD 对比 |
+| 校验项 · Check | 说明 · Description | 状态 |
+|--------|------|:--:|
+| 文件存在 · File existence | `fs.existsSync()` 验证声称创建的文件 | ✅ |
+| 文件变更 · File changed | 对比 Snapshot hash，确认真的改了 | ✅ |
+| 返回值非空 · Non-empty result | 不应为空但为空 → WARN | ✅ |
+| Lint 验证 | ESLint（待接入） | 🔧 |
+| TypeCheck | `tsc --noEmit`（待接入） | 🔧 |
+| 格式校验 | JSON.parse / 结构化验证（待接入） | 🔧 |
+| npm 发布验证 | `npm view` 确认版本存在（待接入） | 🔧 |
+| git push 验证 | `git ls-remote` HEAD 对比（待接入） | 🔧 |
+
+> 文件存在 + hash 对比已能检测 Agent 最常见的幻觉（声称写了但没写）。其余校验项保留接口，按需接入。
 
 #### Audit Log — 不可篡改审计 · Immutable Audit
 
@@ -224,7 +236,7 @@ Pre-exec 评估  →  Runtime 评估  →  Post-exec 评估
 | 用户删除了 Agent 创建的代码 · *User deleted agent's code* | `user_deleted_code` | -0.8 |
 | 用户打断了 Agent · *User interrupted agent* | `user_interrupted` | -0.6 |
 | 用户修改了 Agent 输出 · *User modified agent output* | `user_modified_output` | -0.5 |
-| 用户重复了相同指令 · *User repeated same command* | `user_repeated_instruction` | -0.3 |
+| 用户重复了相同指令 · *User repeated same command* | `user_repeated_instruction` | -0.15 |
 | 用户立即继续对话 · *User immediately continued* | `user_immediate_continue` | +0.3 |
 | 用户说"做得好" · *User said "good job"* | `user_explicit_approval` | +0.6 |
 | 用户使用了 Agent 的结果 · *User used agent's result* | `user_used_result` | +0.7 |
@@ -260,17 +272,28 @@ Total: 156 | Failures: 2 | High-Risk: 3
 
 ## 📦 安装 · Installation
 
+### 全量安装（包含 HTTP API + Dashboard）
+
 ```bash
 npm install sentinel-agentos
 ```
 
-即可使用所有功能。
+### 轻量安装（仅 Guard + Memory + Evaluator，零额外依赖）
 
-如果从源码开发：
+如果只需要核心能力，直接引用 `sentinel-light.js`：
+
+```javascript
+const { AgentOS } = require('sentinel-agentos/sentinel-light');
+```
+
+> `sentinel-light.js` 不依赖 express/puppeteer/ws/cors，安装体积大幅减小。  
+> 未来将拆分为 `sentinel-agentos-core` + `sentinel-agentos-server` 两个独立包。
+
+从源码开发：
 
 ```bash
-git clone git@github.com:jishuanjimingtian/Sentinel AgentOS.git
-cd Sentinel AgentOS
+git clone git@github.com:jishuanjimingtian/sentinel-agentos.git
+cd sentinel-agentos
 npm install
 npm test        # 99 tests, all passing · 99个测试全部通过
 npm run build   # 编译到 dist/
@@ -657,7 +680,7 @@ sentinel.execute(toolName, params, fn)
 │   └─ 异常捕获，失败也记录审计
 │
 ├─ 第4层: Verify + Audit + Evaluator
-│   ├─ Verify Gate — 8 项确定性校验 (文件存在/变更/lint/格式...)
+│   ├─ Verify Gate — 确定性校验 (文件存在/变更 + 可扩展)
 │   ├─ Audit Log — JSONL 不可篡改审计
 │   ├─ PreExecEvaluator — 参数质量+上下文利用评分
 │   ├─ RuntimeEvaluator — 重试/超时/自纠正评分
@@ -819,7 +842,7 @@ Session 结束
 | Risk Gate (四维公式) | ✅ `risk-gate.ts` | ✅ `execute()` 内自动 | 100% |
 | 确定性命令拦截 | ❌ (依赖 Sandbox) | ✅ 正则匹配 (<1μs) | **额外增强** |
 | Snapshot Gate | ✅ `snapshot-verify.ts` | ✅ `execute()` 内自动 | 100% |
-| Verify Gate (8 项校验) | ✅ `snapshot-verify.ts` | ✅ `execute()` 内自动 | 100% |
+| Verify Gate (3 项已实现 + 5 可扩展) | ✅ `snapshot-verify.ts` | ✅ `execute()` 内自动 | 100% |
 | Audit Log (JSONL) | ✅ `audit-log.ts` | ✅ 双写 (AgentOS + 自身) | 100% |
 | 规则可配置 | ❌ (代码硬编码) | ✅ `guard-rules.json` | **额外增强** |
 | Working Memory | ✅ `working.ts` | ✅ 消息+工具缓存 | 100% |
@@ -838,6 +861,11 @@ Session 结束
 | Sandbox 沙箱 | ✅ `sandbox.ts` | ❌ (暂未接入) | 0% |
 | HTTP API | ✅ `server.ts` | ❌ (skill 为进程内调用) | N/A |
 | **按设计范围总计** | **20 项** | **20/20** | **100%** |
+
+> **接入深度说明**  
+> `wrapper.ts` / `sentinelPlugin()` 提供的是框架无关的通用中间件 API（`preCheck` / `postCheck` / `execute`）。
+> 真正的"一行接入"需要 OpenClaw 引擎级别的 hook 注册——这是平台能力，非本包可控。  
+> 当前推荐方式是通过 `sentinel-guard` skill 的 `sentinel.execute()` 手动包装每次工具调用，或通过 `global.__sentinel` 自动 hook。
 
 ### 快速入门（5 步接入）
 

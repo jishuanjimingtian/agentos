@@ -98,18 +98,24 @@ export interface EpisodicEvent {
   relatedEntities: string[];
 }
 
+export interface UserFact {
+  fact: string;
+  timestamp: number;
+  lastReferenced: number;
+}
+
 export interface SemanticMemory {
   userPreferences: Record<string, unknown>;
-  userFacts: string[];
+  userFacts: UserFact[];
   projectContext: Record<
     string,
-    {
+    Partial<{
       description: string;
       techStack: string[];
       conventions: string[];
       architecture: string;
       knownIssues: string[];
-    }
+    }> & Record<string, unknown>
   >;
   learnedRules: LearnedRule[];
   glossary: Record<string, string>;
@@ -119,6 +125,7 @@ export interface LearnedRule {
   rule: string;
   confidence: number;
   source: string[];
+  lastReferenced: number;
 }
 
 // === Evaluator Types ===

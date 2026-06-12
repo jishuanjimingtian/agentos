@@ -60,11 +60,13 @@ export class ImplicitFeedbackEngine {
   /**
    * Scan the audit log and auto-detect implicit feedback signals.
    *
-   * Detection rules:
+   * Detection rules (conservative — low confidence to avoid false positives):
    * - verify FAIL or WARN → user_provided_correction (agent made mistakes)
-   * - same tool+params called within 60s → user_repeated_instruction (agent didn't do it right)
-   * - high risk operations (score > 5) → implicit caution
-   * - consecutive success → agent_self_corrected
+   * - same tool+params called within 60s → user_repeated_instruction (low confidence, noisy)
+   * - high risk operations that were retried and eventually passed → agent_self_corrected
+   *
+   * Note: auto-detected signals carry lower confidence than explicit user feedback.
+   * They serve as supplementary data, not primary quality indicators.
    *
    * @param entries Recent audit entries to analyze
    * @param sessionId Session to attribute signals to
@@ -73,7 +75,7 @@ export class ImplicitFeedbackEngine {
   autoDetect(entries: AuditEntry[], sessionId: string): number {
     let detected = 0;
 
-    // Rule 1: Verify failures → agent made errors
+    // Rule 1: Verify failures → agent made errors (confidence 0.7)
     for (const entry of entries) {
       if (entry.verifyGate.status !== 'PASS') {
         this.record(
@@ -88,6 +90,7 @@ export class ImplicitFeedbackEngine {
     }
 
     // Rule 2: Repeated same tool call within 60s → user had to repeat
+    // Low confidence (0.3) because some tools (read, exec) are legitimately called multiple times
     for (let i = 0; i < entries.length; i++) {
       for (let j = i + 1; j < entries.length; j++) {
         const ei = entries[i];
@@ -100,52 +103,37 @@ export class ImplicitFeedbackEngine {
             'user_repeated_instruction',
             sessionId,
             ej.id,
-            0.6,
+            0.3,
             'auto-audit-repeat',
           );
           detected++;
-          break; // one signal per repeated pair
+          break;
         }
       }
     }
 
-    // Rule 3: High risk ops that passed anyway → agent handled risky work
+    // Rule 3: Agent self-corrected — only when retry eventually succeeded
+    // (NOT "high risk passed" — that's coincidence, not demonstrated skill)
+    // Detected by: same tool+params failed once, then passed later in the same session
+    const failures = new Set<string>();
     for (const entry of entries) {
-      if (entry.riskGate.score > 3 && entry.verifyGate.status === 'PASS') {
-        // Agent successfully executed a risky operation → mild positive
+      if (entry.verifyGate.status !== 'PASS') {
+        failures.add(JSON.stringify({ t: entry.toolName, p: entry.toolParameters }));
+      }
+    }
+    for (const entry of entries) {
+      const key = JSON.stringify({ t: entry.toolName, p: entry.toolParameters });
+      if (entry.verifyGate.status === 'PASS' && failures.has(key)) {
         this.record(
           'agent_self_corrected',
           sessionId,
           entry.id,
-          0.4,
-          'auto-audit-risk-handled',
+          0.5,
+          'auto-audit-self-corrected',
         );
         detected++;
+        failures.delete(key); // one signal per correction
       }
-    }
-
-    // Rule 4: Consecutive passes → positive signal
-    let streak = 0;
-    for (const entry of entries) {
-      if (entry.verifyGate.status === 'PASS') {
-        streak++;
-      } else {
-        if (streak >= 5) {
-          this.record(
-            'user_immediate_continue',
-            sessionId,
-            entries[entries.indexOf(entry) - 1]?.id,
-            0.3,
-            'auto-audit-streak',
-          );
-          detected++;
-        }
-        streak = 0;
-      }
-    }
-    if (streak >= 5) {
-      this.record('user_immediate_continue', sessionId, undefined, 0.3, 'auto-audit-streak');
-      detected++;
     }
 
     return detected;
@@ -159,7 +147,7 @@ export class ImplicitFeedbackEngine {
       case 'user_interrupted': return -0.6;
       case 'user_provided_correction': return -0.7;
       case 'user_modified_output': return -0.5;
-      case 'user_repeated_instruction': return -0.3;
+      case 'user_repeated_instruction': return -0.15;
       case 'user_ignored_result': return -0.4;
       case 'user_silence_then_praise': return 0.2;
       case 'user_immediate_continue': return 0.3;

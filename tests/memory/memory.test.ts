@@ -288,7 +288,7 @@ describe('SemanticMemoryStore', () => {
     });
     store.learnRule('Test first', 's1');
     store.learnRule('Test first', 's2'); // 0.6
-    store.learnRule('Test first', 's3'); // 0.7
+    store.learnRule('Test first', 's3'); // 0.806
 
     const summary = store.generateContextSummary();
     expect(summary).toContain('Shanghai');
