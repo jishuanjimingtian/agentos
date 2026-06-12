@@ -111,6 +111,7 @@ export class AgentOS {
     const runtimeEval = new RuntimeEvaluator();
     const postExecEval = new PostExecEvaluator();
     const feedbackEngine = new ImplicitFeedbackEngine();
+    feedbackEngine.enablePersistence(this.config.workspaceRoot!);
     const profiler = new AgentProfiler(feedbackEngine);
 
     this.evaluator = {

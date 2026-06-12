@@ -124,9 +124,9 @@ export class AuditLog {
 
     for (const entry of entries) {
       byTool[entry.toolName] = (byTool[entry.toolName] || 0) + 1;
-      totalScore += entry.riskGate.score;
-      if (entry.verifyGate.status === 'FAIL') verifyFailures++;
-      if (entry.riskGate.score > 3.0) highRiskOps++;
+      totalScore += entry.riskGate?.score ?? 0;
+      if (entry.verifyGate?.status === 'FAIL') verifyFailures++;
+      if ((entry.riskGate?.score ?? 0) > 3.0) highRiskOps++;
       sessions.add(entry.sessionId);
     }
 

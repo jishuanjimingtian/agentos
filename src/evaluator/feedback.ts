@@ -1,6 +1,8 @@
 import { ImplicitFeedback, SignalType } from '../types';
 import { AuditEntry } from '../types';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 
 /**
  * Generate a unique feedback ID.
@@ -25,6 +27,11 @@ function generateFeedbackId(): string {
  */
 export class ImplicitFeedbackEngine {
   private feedbackLog: ImplicitFeedback[] = [];
+  private persistPath: string | null = null;
+  // Global audit log for cross-session auto-detection
+  private globalAuditPath: string | null = null;
+  // Track which auto-detected signals we've already logged (dedup key)
+  private detectedKeys: Set<string> = new Set();
 
   /**
    * Record an implicit feedback signal.
@@ -50,6 +57,7 @@ export class ImplicitFeedbackEngine {
     };
 
     this.feedbackLog.push(feedback);
+    this.persist();
     return feedback;
   }
 
@@ -72,20 +80,91 @@ export class ImplicitFeedbackEngine {
    * @param sessionId Session to attribute signals to
    * @returns Number of signals auto-detected
    */
+  /**
+   * Enable persistence for feedbackLog and auto-detected signal keys.
+   */
+  enablePersistence(workspaceRoot: string): void {
+    const agentosDir = path.join(workspaceRoot, '.agentos');
+    if (!fs.existsSync(agentosDir)) {
+      fs.mkdirSync(agentosDir, { recursive: true });
+    }
+    this.persistPath = path.join(agentosDir, 'feedback.jsonl');
+    this.globalAuditPath = path.join(agentosDir, 'audit.jsonl');
+    this.load();
+  }
+
+  /** Persist the current feedbackLog and detectedKeys to disk. */
+  private persist(): void {
+    if (!this.persistPath) return;
+    try {
+      const snapshot = {
+        feedbackLog: this.feedbackLog,
+        detectedKeys: Array.from(this.detectedKeys),
+        updatedAt: Date.now(),
+      };
+      fs.writeFileSync(this.persistPath, JSON.stringify(snapshot) + '\n', 'utf-8');
+    } catch {
+      // Non-critical, silently ignore persist failures
+    }
+  }
+
+  /** Load persisted feedback log from disk. */
+  private load(): void {
+    if (!this.persistPath) return;
+    try {
+      if (!fs.existsSync(this.persistPath)) return;
+      const content = fs.readFileSync(this.persistPath, 'utf-8').trim();
+      if (!content) return;
+      const snapshot = JSON.parse(content);
+      if (Array.isArray(snapshot.feedbackLog)) {
+        this.feedbackLog = snapshot.feedbackLog;
+        // Remove stale signals older than 7 days to prevent unbounded growth
+        const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        this.feedbackLog = this.feedbackLog.filter((f) => f.timestamp >= cutoff);
+      }
+      if (Array.isArray(snapshot.detectedKeys)) {
+        this.detectedKeys = new Set(snapshot.detectedKeys);
+      }
+    } catch {
+      // Corrupt file — start fresh
+    }
+  }
+
+  /**
+   * Cross-session auto-detect: scan the global audit.jsonl for signals
+   * from ALL sessions, not just the current one.
+   */
+  autoDetectGlobal(): number {
+    if (!this.globalAuditPath) return 0;
+    try {
+      if (!fs.existsSync(this.globalAuditPath)) return 0;
+      const content = fs.readFileSync(this.globalAuditPath, 'utf-8');
+      const lines = content.split('\n').filter((l) => l.trim());
+      const entries: AuditEntry[] = lines.map((l) => JSON.parse(l));
+      return this.autoDetect(entries, '__global__');
+    } catch {
+      return 0;
+    }
+  }
+
   autoDetect(entries: AuditEntry[], sessionId: string): number {
     let detected = 0;
 
     // Rule 1: Verify failures → agent made errors (confidence 0.7)
     for (const entry of entries) {
       if (entry.verifyGate.status !== 'PASS') {
-        this.record(
-          'user_provided_correction',
-          sessionId,
-          entry.id,
-          0.7,
-          'auto-audit-verify',
-        );
-        detected++;
+        const dedupKey = `verify-fail:${entry.id}`;
+        if (!this.detectedKeys.has(dedupKey)) {
+          this.detectedKeys.add(dedupKey);
+          this.record(
+            'user_provided_correction',
+            sessionId,
+            entry.id,
+            0.7,
+            'auto-audit-verify',
+          );
+          detected++;
+        }
       }
     }
 
@@ -99,14 +178,18 @@ export class ImplicitFeedbackEngine {
         if (ei.toolName === ej.toolName &&
             JSON.stringify(ei.toolParameters) === JSON.stringify(ej.toolParameters) &&
             Math.abs(ei.completedAt - ej.startedAt) < 60_000) {
-          this.record(
-            'user_repeated_instruction',
-            sessionId,
-            ej.id,
-            0.3,
-            'auto-audit-repeat',
-          );
-          detected++;
+          const dedupKey = `repeat:${ei.id}:${ej.id}`;
+          if (!this.detectedKeys.has(dedupKey)) {
+            this.detectedKeys.add(dedupKey);
+            this.record(
+              'user_repeated_instruction',
+              sessionId,
+              ej.id,
+              0.3,
+              'auto-audit-repeat',
+            );
+            detected++;
+          }
           break;
         }
       }
@@ -124,14 +207,18 @@ export class ImplicitFeedbackEngine {
     for (const entry of entries) {
       const key = JSON.stringify({ t: entry.toolName, p: entry.toolParameters });
       if (entry.verifyGate.status === 'PASS' && failures.has(key)) {
-        this.record(
-          'agent_self_corrected',
-          sessionId,
-          entry.id,
-          0.5,
-          'auto-audit-self-corrected',
-        );
-        detected++;
+        const dedupKey = `self-corrected:${entry.id}`;
+        if (!this.detectedKeys.has(dedupKey)) {
+          this.detectedKeys.add(dedupKey);
+          this.record(
+            'agent_self_corrected',
+            sessionId,
+            entry.id,
+            0.5,
+            'auto-audit-self-corrected',
+          );
+          detected++;
+        }
         failures.delete(key); // one signal per correction
       }
     }
@@ -160,6 +247,11 @@ export class ImplicitFeedbackEngine {
   }
 
   getSatisfactionScore(sessionId?: string, recentHours = 24): number {
+    // If feedbackLog is empty, try auto-detecting from global audit log first
+    if (this.feedbackLog.length === 0 && this.globalAuditPath) {
+      this.autoDetectGlobal();
+    }
+
     let relevant = this.feedbackLog;
 
     if (sessionId) {
@@ -169,6 +261,7 @@ export class ImplicitFeedbackEngine {
     const cutoff = Date.now() - recentHours * 60 * 60 * 1000;
     relevant = relevant.filter((f) => f.timestamp >= cutoff);
 
+    // No signals: return neutral 0 (maps to 50/100 satisfaction) instead of 0
     if (relevant.length === 0) return 0;
 
     let weightedSum = 0;
