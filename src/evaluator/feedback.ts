@@ -32,6 +32,11 @@ export class ImplicitFeedbackEngine {
   private globalAuditPath: string | null = null;
   // Track which auto-detected signals we've already logged (dedup key)
   private detectedKeys: Set<string> = new Set();
+  // Caps for unbounded growth
+  private static readonly MAX_FEEDBACK = 300;
+  private static readonly MAX_DETECTED_KEYS = 500;
+  // Persist as append-only JSONL (one line per record) instead of full snapshot rewrite
+  private persistLinePath: string | null = null;
 
   /**
    * Record an implicit feedback signal.
@@ -57,6 +62,13 @@ export class ImplicitFeedbackEngine {
     };
 
     this.feedbackLog.push(feedback);
+    // Trim oldest to prevent unbounded growth
+    while (this.feedbackLog.length > ImplicitFeedbackEngine.MAX_FEEDBACK) this.feedbackLog.shift();
+    // Keep detectedKeys within bounds
+    if (this.detectedKeys.size > ImplicitFeedbackEngine.MAX_DETECTED_KEYS) {
+      const iter = this.detectedKeys.values();
+      for (let i = 0; i < 100; i++) { const n = iter.next(); if (n.done) break; this.detectedKeys.delete(n.value); }
+    }
     this.persist();
     return feedback;
   }
@@ -89,36 +101,67 @@ export class ImplicitFeedbackEngine {
       fs.mkdirSync(agentosDir, { recursive: true });
     }
     this.persistPath = path.join(agentosDir, 'feedback.jsonl');
+    this.persistLinePath = path.join(agentosDir, 'feedback-lines.jsonl');
     this.globalAuditPath = path.join(agentosDir, 'audit.jsonl');
     this.load();
   }
 
-  /** Persist the current feedbackLog and detectedKeys to disk. */
+  /** Persist: append one line to feedback-lines.jsonl. */
+  private _writeCount = 0;
   private persist(): void {
-    if (!this.persistPath) return;
+    if (!this.persistLinePath) return;
     try {
-      const snapshot = {
-        feedbackLog: this.feedbackLog,
-        detectedKeys: Array.from(this.detectedKeys),
-        updatedAt: Date.now(),
-      };
-      fs.writeFileSync(this.persistPath, JSON.stringify(snapshot) + '\n', 'utf-8');
-    } catch {
-      // Non-critical, silently ignore persist failures
-    }
+      const last = this.feedbackLog[this.feedbackLog.length - 1];
+      if (!last) return;
+      const line = JSON.stringify(last) + '\n';
+      fs.appendFileSync(this.persistLinePath, line, 'utf-8');
+      this._writeCount++;
+      // Every 50 writes, compact the file to keep only last 200 lines
+      if (this._writeCount >= 50) {
+        this._writeCount = 0;
+        this.compactFeedbackFile();
+      }
+    } catch { /* non-critical */ }
+  }
+
+  /** Compact feedback-lines.jsonl: keep last 200 lines only. */
+  private compactFeedbackFile(): void {
+    if (!this.persistLinePath) return;
+    try {
+      if (!fs.existsSync(this.persistLinePath)) return;
+      const all = fs.readFileSync(this.persistLinePath, 'utf-8').trim();
+      if (!all) return;
+      const lines = all.split('\n').filter(Boolean);
+      if (lines.length <= 200) return;
+      const recent = lines.slice(-200);
+      fs.writeFileSync(this.persistLinePath, recent.join('\n') + '\n', 'utf-8');
+    } catch { /* non-critical */ }
   }
 
   /** Load persisted feedback log from disk. */
   private load(): void {
     if (!this.persistPath) return;
     try {
+      // Prefer new line-based format
+      if (this.persistLinePath && fs.existsSync(this.persistLinePath)) {
+        const content = fs.readFileSync(this.persistLinePath, 'utf-8').trim();
+        if (content) {
+          const lines = content.split('\n').filter(Boolean);
+          const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+          this.feedbackLog = lines
+            .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+            .filter((f): f is ImplicitFeedback => f !== null && f.timestamp >= cutoff)
+            .slice(-ImplicitFeedbackEngine.MAX_FEEDBACK);
+          return;
+        }
+      }
+      // Fallback: old snapshot format
       if (!fs.existsSync(this.persistPath)) return;
       const content = fs.readFileSync(this.persistPath, 'utf-8').trim();
       if (!content) return;
       const snapshot = JSON.parse(content);
       if (Array.isArray(snapshot.feedbackLog)) {
         this.feedbackLog = snapshot.feedbackLog;
-        // Remove stale signals older than 7 days to prevent unbounded growth
         const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
         this.feedbackLog = this.feedbackLog.filter((f) => f.timestamp >= cutoff);
       }
